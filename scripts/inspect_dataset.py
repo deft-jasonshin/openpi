@@ -24,10 +24,7 @@ def main(args: Args) -> None:
     if args.repo_id:
         repo_id = args.repo_id
     elif args.config_name:
-        all_configs = {c.name: c for c in _config.all_configs()}
-        if args.config_name not in all_configs:
-            raise ValueError(f"Unknown config: {args.config_name!r}. Available: {list(all_configs)}")
-        train_config = all_configs[args.config_name]
+        train_config = _config.get_config(args.config_name)
         data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
         repo_id = data_config.repo_id
     else:
