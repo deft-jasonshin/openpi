@@ -6,7 +6,7 @@ Usage:
 """
 
 import dataclasses
-from PIL import Image as PILImage
+
 import tyro
 
 import openpi.training.config as _config
@@ -28,7 +28,6 @@ def main(args: Args) -> None:
         if args.config_name not in all_configs:
             raise ValueError(f"Unknown config: {args.config_name!r}. Available: {list(all_configs)}")
         train_config = all_configs[args.config_name]
-        # Create a minimal DataConfig just to get the repo_id.
         data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
         repo_id = data_config.repo_id
     else:
@@ -68,4 +67,5 @@ def main(args: Args) -> None:
 
 
 if __name__ == "__main__":
-    tyro.cli(Args, main=main)
+    args = tyro.cli(Args)
+    main(args)
