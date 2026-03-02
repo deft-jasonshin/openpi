@@ -18,6 +18,8 @@ import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
+import openpi.policies.deft_legacy_policy as deft_legacy_policy
+import openpi.policies.deft_policy as deft_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
@@ -267,6 +269,111 @@ class LeRobotAlohaDataConfig(DataConfigFactory):
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
             )
 
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotDeftDataConfig(DataConfigFactory):
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
+
+    # Repack transforms from dataset feature keys (dot notation) to policy input keys.
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/left_joint_pos": "observation.left_joint_pos",
+                        "observation/left_gripper_pos": "observation.left_gripper_pos",
+                        "observation/right_joint_pos": "observation.right_joint_pos",
+                        "observation/right_gripper_pos": "observation.right_gripper_pos",
+                        "observation/base_state": "observation.base_state",
+                        "observation/torso_state": "observation.torso_state",
+                        "observation/images/cam_high": "observation.images.cam_high",
+                        "observation/images/cam_left_wrist": "observation.images.cam_left_wrist",
+                        "observation/images/cam_right_wrist": "observation.images.cam_right_wrist",
+                        "action/left_joint_pos": "action.left_joint_pos",
+                        "action/left_gripper_pos": "action.left_gripper_pos",
+                        "action/right_joint_pos": "action.right_joint_pos",
+                        "action/right_gripper_pos": "action.right_gripper_pos",
+                        "action/base_cmd": "action.base_cmd",
+                        "action/lift_cmd": "action.lift_cmd",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+    )
+
+    # Action keys used by the data loader to assemble action sequences.
+    action_sequence_keys: Sequence[str] = (
+        "action.left_joint_pos",
+        "action.left_gripper_pos",
+        "action.right_joint_pos",
+        "action.right_gripper_pos",
+        "action.base_cmd",
+        "action.lift_cmd",
+    )
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[deft_policy.DeftInputs(model_type=model_config.model_type)],
+            outputs=[deft_policy.DeftOutputs()],
+        )
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotDeftLegacyDataConfig(DataConfigFactory):
+    # If provided, will be injected into the input data if the "prompt" key is not present.
+    default_prompt: str | None = None
+
+    # Legacy schema:
+    # - action is a single 18-dim vector at key "action"
+    # - state is a single 68-dim vector at key "observation.state"
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/state": "observation.state",
+                        "observation/images/cam_high": "observation.images.cam_high",
+                        "observation/images/cam_left_wrist": "observation.images.cam_left_wrist",
+                        "observation/images/cam_right_wrist": "observation.images.cam_right_wrist",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+    )
+
+    # Legacy action key is a single packed vector.
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[deft_legacy_policy.DeftLegacyInputs(model_type=model_config.model_type)],
+            outputs=[deft_legacy_policy.DeftLegacyOutputs()],
+        )
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
 
         return dataclasses.replace(
@@ -760,6 +867,39 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+    #
+    # Fine-tuning DEFT (yam_ai_mobile) config.
+    #
+    TrainConfig(
+        name="pi0.5_deft",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
+        data=LeRobotDeftDataConfig(
+            # Replace with your dataset repo id.
+            repo_id="your_hf_username/your_deft_dataset",
+            base_config=DataConfig(
+                # Recommended: load task text from LeRobot task metadata.
+                prompt_from_task=False,
+            ),
+        ),
+        # Fine-tune from pi0 base checkpoint.
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=50_000,
+    ),
+    TrainConfig(
+        name="pi0.5_deft_legacy",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
+        data=LeRobotDeftLegacyDataConfig(
+            # Replace with your dataset repo id.
+            repo_id="your_hf_username/your_deft_dataset",
+            base_config=DataConfig(
+                # Set to True if you want prompts from LeRobot task metadata.
+                prompt_from_task=False,
+            ),
+        ),
+        # Fine-tune from pi0.5 base checkpoint.
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=50_000,
     ),
     #
     # Fine-tuning Aloha configs.
