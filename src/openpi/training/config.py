@@ -890,8 +890,7 @@ _CONFIGS = [
         name="pi0.5_deft_legacy",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
         data=LeRobotDeftLegacyDataConfig(
-            # Replace with your dataset repo id.
-            repo_id="your_hf_username/your_deft_dataset",
+            repo_id="dataset-0218",
             base_config=DataConfig(
                 # Set to True if you want prompts from LeRobot task metadata.
                 prompt_from_task=False,
