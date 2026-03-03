@@ -306,7 +306,6 @@ class LeRobotDeftDataConfig(DataConfigFactory):
                         "action/right_gripper_pos": "action.right_gripper_pos",
                         "action/base_cmd": "action.base_cmd",
                         "action/lift_cmd": "action.lift_cmd",
-                        "prompt": "prompt",
                     }
                 )
             ]
@@ -358,7 +357,6 @@ class LeRobotDeftLegacyDataConfig(DataConfigFactory):
                         "observation/images/cam_left_wrist": "observation.images.cam_left_wrist",
                         "observation/images/cam_right_wrist": "observation.images.cam_right_wrist",
                         "actions": "action",
-                        "prompt": "prompt",
                     }
                 )
             ]
@@ -892,6 +890,7 @@ _CONFIGS = [
         data=LeRobotDeftLegacyDataConfig(
             # Replace with your dataset repo id.
             repo_id="your_hf_username/your_deft_dataset",
+            default_prompt="pick up the compressor part from the shelf and place it on lower shelf",
             base_config=DataConfig(
                 # Set to True if you want prompts from LeRobot task metadata.
                 prompt_from_task=False,
