@@ -889,7 +889,7 @@ _CONFIGS = [
         model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
         data=LeRobotDeftLegacyDataConfig(
             # Replace with your dataset repo id.
-            repo_id="your_hf_username/your_deft_dataset",
+            repo_id="dataset-lift",
             default_prompt="pick up the compressor part from the shelf and place it on lower shelf",
             base_config=DataConfig(
                 # Set to True if you want prompts from LeRobot task metadata.
