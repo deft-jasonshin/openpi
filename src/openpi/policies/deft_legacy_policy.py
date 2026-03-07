@@ -43,6 +43,7 @@ class DeftLegacyInputs(transforms.DataTransformFn):
 
     def __call__(self, data: dict) -> dict:
         state = np.asarray(data["observation/state"])
+        action_dim = 18
         # Keep only joint positions + base + torso from packed legacy state.
         # Supports both known variants:
         # - 68-dim: includes EE pos/orientation between arm torques and right-arm positions.
@@ -67,10 +68,19 @@ class DeftLegacyInputs(transforms.DataTransformFn):
                 ],
                 axis=-1,
             )
+        elif state.shape[-1] == 86:
+            action_dim = 14
+            state = np.concatenate(
+                [
+                    state[..., 0:7],
+                    state[..., 36:43],
+                ],
+                axis=-1,
+            )
         else:
             raise ValueError(
                 f"Unsupported legacy observation/state dim: {state.shape[-1]}. "
-                "Expected 68 or 50."
+                "Expected 68, 50, or 86."
             )
 
         base_image = _parse_image(data["observation/images/cam_high"])
@@ -79,6 +89,7 @@ class DeftLegacyInputs(transforms.DataTransformFn):
 
         inputs = {
             "state": state,
+            "legacy_action_dim": np.asarray(action_dim, dtype=np.int32),
             "image": {
                 "base_0_rgb": base_image,
                 "left_wrist_0_rgb": left_wrist_image,
@@ -108,4 +119,5 @@ class DeftLegacyOutputs(transforms.DataTransformFn):
     """Outputs for legacy yam_ai_mobile schema."""
 
     def __call__(self, data: dict) -> dict:
-        return {"actions": np.asarray(data["actions"][:, :18])}
+        action_dim = int(np.asarray(data.get("legacy_action_dim", 18)).reshape(-1)[0])
+        return {"actions": np.asarray(data["actions"][:, :action_dim])}
