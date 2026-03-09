@@ -7,6 +7,20 @@ from openpi import transforms
 from openpi.models import model as _model
 
 
+def _get_obs_key(flat: dict, slash_key: str):
+    """Look up a key by slash-notation, falling back to dot-notation for legacy robot clients."""
+    if slash_key in flat:
+        return flat[slash_key]
+    dot_key = slash_key.replace("/", ".")
+    if dot_key in flat:
+        return flat[dot_key]
+    raise KeyError(
+        f"Key '{slash_key}' not found in observation. "
+        f"Also tried legacy dot-notation key '{dot_key}'. "
+        f"Available keys: {sorted(flat.keys())}"
+    )
+
+
 def make_deft_legacy_example() -> dict:
     """Creates a random input example for the legacy Deft policy."""
     return {
@@ -42,8 +56,11 @@ class DeftLegacyInputs(transforms.DataTransformFn):
     model_type: _model.ModelType
 
     def __call__(self, data: dict) -> dict:
-        state = np.asarray(data["observation/state"])
-        action_dim = 18
+        # Flatten nested dicts (e.g. {"observation": {"state": x}} → {"observation/state": x})
+        # and support both slash-notation (server format) and dot-notation (legacy robot schema).
+        flat = transforms.flatten_dict(data)
+
+        state = np.asarray(_get_obs_key(flat, "observation/state"))
         # Keep only joint positions + base + torso from packed legacy state.
         # Supports both known variants:
         # - 68-dim: includes EE pos/orientation between arm torques and right-arm positions.
@@ -83,9 +100,9 @@ class DeftLegacyInputs(transforms.DataTransformFn):
                 "Expected 68, 50, or 86."
             )
 
-        base_image = _parse_image(data["observation/images/cam_high"])
-        left_wrist_image = _parse_image(data["observation/images/cam_left_wrist"])
-        right_wrist_image = _parse_image(data["observation/images/cam_right_wrist"])
+        base_image = _parse_image(_get_obs_key(flat, "observation/images/cam_high"))
+        left_wrist_image = _parse_image(_get_obs_key(flat, "observation/images/cam_left_wrist"))
+        right_wrist_image = _parse_image(_get_obs_key(flat, "observation/images/cam_right_wrist"))
 
         inputs = {
             "state": state,
@@ -102,11 +119,11 @@ class DeftLegacyInputs(transforms.DataTransformFn):
             },
         }
 
-        if "actions" in data:
-            inputs["actions"] = np.asarray(data["actions"])
+        if "actions" in flat:
+            inputs["actions"] = np.asarray(flat["actions"])
 
-        if "prompt" in data:
-            prompt = data["prompt"]
+        if "prompt" in flat:
+            prompt = flat["prompt"]
             if isinstance(prompt, bytes):
                 prompt = prompt.decode("utf-8")
             inputs["prompt"] = prompt
