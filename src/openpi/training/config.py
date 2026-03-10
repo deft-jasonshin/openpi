@@ -951,7 +951,26 @@ _CONFIGS = [
         ).get_freeze_filter(),
         ema_decay=None,
     ),
-
+        TrainConfig(
+        name="pi0.5_deft_experiment1",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=30,
+        ),
+        data=LeRobotDeftLegacyDataConfig(
+            repo_id="dataset-experiment1",
+            default_prompt="pick up the compressor part and place it on the fixture",
+            base_config=DataConfig(
+                prompt_from_task=False,
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+        batch_size=32,
+        num_workers=8,
+        fsdp_devices=2,
+    ),
         TrainConfig(
         name="pi0.5_deft_experiment1_lora",
         model=pi0_config.Pi0Config(
@@ -966,6 +985,7 @@ _CONFIGS = [
             base_config=DataConfig(
                 prompt_from_task=False,
             ),
+            extra_delta_transform=True,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=20_000,
