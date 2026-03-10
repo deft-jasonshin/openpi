@@ -285,6 +285,11 @@ class LeRobotDeftDataConfig(DataConfigFactory):
     # If provided, will be injected into the input data if the "prompt" key is not present.
     default_prompt: str | None = None
 
+    # If True, convert absolute joint position actions to delta actions for training,
+    # and convert predicted deltas back to absolute actions at inference time.
+    # Grippers are always kept absolute.
+    extra_delta_transform: bool = True
+
     # Repack transforms from dataset feature keys (dot notation) to policy input keys.
     repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
         default=_transforms.Group(
@@ -328,6 +333,14 @@ class LeRobotDeftDataConfig(DataConfigFactory):
             inputs=[deft_policy.DeftInputs(model_type=model_config.model_type)],
             outputs=[deft_policy.DeftOutputs()],
         )
+
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
 
         return dataclasses.replace(
@@ -343,6 +356,11 @@ class LeRobotDeftDataConfig(DataConfigFactory):
 class LeRobotDeftLegacyDataConfig(DataConfigFactory):
     # If provided, will be injected into the input data if the "prompt" key is not present.
     default_prompt: str | None = None
+
+    # If True, convert absolute joint position actions to delta actions for training,
+    # and convert predicted deltas back to absolute actions at inference time.
+    # Grippers are always kept absolute.
+    extra_delta_transform: bool = True
 
     # Legacy schema:
     # - action is a single 18-dim vector at key "action"
@@ -372,6 +390,14 @@ class LeRobotDeftLegacyDataConfig(DataConfigFactory):
             inputs=[deft_legacy_policy.DeftLegacyInputs(model_type=model_config.model_type)],
             outputs=[deft_legacy_policy.DeftLegacyOutputs()],
         )
+
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
 
         return dataclasses.replace(
