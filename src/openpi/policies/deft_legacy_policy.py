@@ -65,6 +65,7 @@ class DeftLegacyInputs(transforms.DataTransformFn):
         # Supports both known variants:
         # - 68-dim: includes EE pos/orientation between arm torques and right-arm positions.
         # - 50-dim: no EE pos/orientation fields.
+        action_dim = None
         if state.shape[-1] == 68:
             state = np.concatenate(
                 [
@@ -82,6 +83,15 @@ class DeftLegacyInputs(transforms.DataTransformFn):
                     state[..., 21:28],
                     state[..., 42:48],
                     state[..., 48:50],
+                ],
+                axis=-1,
+            )
+        elif state.shape[-1] == 42:
+            action_dim = 14
+            state = np.concatenate(
+                [
+                    state[..., 0:7],
+                    state[..., 21:28]
                 ],
                 axis=-1,
             )
@@ -106,7 +116,6 @@ class DeftLegacyInputs(transforms.DataTransformFn):
 
         inputs = {
             "state": state,
-            "legacy_action_dim": np.asarray(action_dim, dtype=np.int32),
             "image": {
                 "base_0_rgb": base_image,
                 "left_wrist_0_rgb": left_wrist_image,
@@ -118,6 +127,9 @@ class DeftLegacyInputs(transforms.DataTransformFn):
                 "right_wrist_0_rgb": np.True_,
             },
         }
+
+        if action_dim is not None:
+            inputs["legacy_action_dim"] = np.asarray(action_dim, dtype=np.int32)
 
         if "actions" in flat:
             inputs["actions"] = np.asarray(flat["actions"])
