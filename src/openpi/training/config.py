@@ -969,7 +969,7 @@ _CONFIGS = [
         num_train_steps=30_000,
         batch_size=32,
         num_workers=8,
-        fsdp_devices=2,
+        fsdp_devices=4,
     ),
         TrainConfig(
         name="pi0.5_deft_experiment1_lora",

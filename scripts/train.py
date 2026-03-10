@@ -70,6 +70,35 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
         wandb.run.log_code(epath.Path(__file__).parent.parent)
 
 
+def _upload_checkpoint_to_wandb(checkpoint_dir: epath.Path, step: int):
+    """Upload model weights (params) and norm_stats from a saved checkpoint to W&B as an artifact."""
+    if wandb.run is None:
+        return
+
+    artifact = wandb.Artifact(
+        name=f"{wandb.run.name}-checkpoint",
+        type="model",
+        metadata={"step": step},
+    )
+
+    # Upload params (inference weights)
+    params_dir = checkpoint_dir / str(step) / "params"
+    if params_dir.exists():
+        artifact.add_dir(str(params_dir), name="params")
+    else:
+        logging.warning(f"Params directory not found at {params_dir}, skipping params upload.")
+
+    # Upload norm_stats (assets)
+    assets_dir = checkpoint_dir / str(step) / "assets"
+    if assets_dir.exists():
+        artifact.add_dir(str(assets_dir), name="assets")
+    else:
+        logging.warning(f"Assets directory not found at {assets_dir}, skipping norm_stats upload.")
+
+    wandb.log_artifact(artifact, aliases=["latest", f"step-{step}"])
+    logging.info(f"Uploaded checkpoint at step {step} to W&B artifact '{artifact.name}'")
+
+
 def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
     """Loads and validates the weights. Returns a loaded subset of the weights."""
     loaded_params = loader.load(params_shape)
@@ -271,6 +300,8 @@ def main(config: _config.TrainConfig):
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+            checkpoint_manager.wait_until_finished()
+            _upload_checkpoint_to_wandb(config.checkpoint_dir, step)
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()
