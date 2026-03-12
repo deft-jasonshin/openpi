@@ -66,8 +66,13 @@ class Policy(BasePolicy):
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
+        rtc_context = obs.get("_rtc_context")
+
+        if rtc_context is not None and not self._is_pytorch_model:
+            raise RuntimeError("RTC inference is only supported for PyTorch openpi policies.")
+
         # Make a copy since transformations may modify the inputs in place.
-        inputs = jax.tree.map(lambda x: x, obs)
+        inputs = jax.tree.map(lambda x: x, {k: v for k, v in obs.items() if k != "_rtc_context"})
         inputs = self._input_transform(inputs)
         if not self._is_pytorch_model:
             # Make a batch and convert to jax.Array.
@@ -89,9 +94,23 @@ class Policy(BasePolicy):
 
         observation = _model.Observation.from_dict(inputs)
         start_time = time.monotonic()
+        if rtc_context is not None:
+            prev_chunk = torch.from_numpy(np.asarray(rtc_context["prev_chunk"])).to(self._pytorch_device)
+            actions = self._model.sample_actions_rtc(
+                sample_rng_or_pytorch_device,
+                observation,
+                prev_chunk=prev_chunk,
+                inference_delay=int(rtc_context["inference_delay"]),
+                execution_horizon=int(rtc_context["execution_horizon"]),
+                max_guidance_weight=float(rtc_context.get("max_guidance_weight", 5.0)),
+                **sample_kwargs,
+            )
+        else:
+            actions = self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs)
+
         outputs = {
             "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
+            "actions": actions,
         }
         if "legacy_action_dim" in inputs:
             outputs["legacy_action_dim"] = inputs["legacy_action_dim"]
