@@ -90,11 +90,11 @@ class DeftInputs(transforms.DataTransformFn):
             inputs["actions"] = np.concatenate(
                 [
                     np.asarray(data["action/left_joint_pos"]),
-                    np.atleast_1d(np.asarray(data["action/left_gripper_pos"])),
+                    np.asarray(data["action/left_gripper_pos"]).reshape(-1, 1),
                     np.asarray(data["action/right_joint_pos"]),
-                    np.atleast_1d(np.asarray(data["action/right_gripper_pos"])),
+                    np.asarray(data["action/right_gripper_pos"]).reshape(-1, 1),
                     np.asarray(data["action/base_cmd"]),
-                    np.asarray(data["action/lift_cmd"]),
+                    np.asarray(data["action/lift_cmd"]).reshape(-1, 1),
                 ],
                 axis=-1,
             )
