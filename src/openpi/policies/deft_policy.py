@@ -58,9 +58,9 @@ class DeftInputs(transforms.DataTransformFn):
         state = np.concatenate(
             [
                 np.asarray(data["observation/left_joint_pos"]),
-                np.asarray(data["observation/left_gripper_pos"]),
+                np.atleast_1d(np.asarray(data["observation/left_gripper_pos"])),
                 np.asarray(data["observation/right_joint_pos"]),
-                np.asarray(data["observation/right_gripper_pos"]),
+                np.atleast_1d(np.asarray(data["observation/right_gripper_pos"])),
                 np.asarray(data["observation/base_state"]),
                 np.asarray(data["observation/torso_state"]),
             ]
@@ -90,9 +90,9 @@ class DeftInputs(transforms.DataTransformFn):
             inputs["actions"] = np.concatenate(
                 [
                     np.asarray(data["action/left_joint_pos"]),
-                    np.asarray(data["action/left_gripper_pos"]),
+                    np.atleast_1d(np.asarray(data["action/left_gripper_pos"])),
                     np.asarray(data["action/right_joint_pos"]),
-                    np.asarray(data["action/right_gripper_pos"]),
+                    np.atleast_1d(np.asarray(data["action/right_gripper_pos"])),
                     np.asarray(data["action/base_cmd"]),
                     np.asarray(data["action/lift_cmd"]),
                 ],
