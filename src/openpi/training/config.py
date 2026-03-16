@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.deft_policy as deft_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -223,6 +224,84 @@ class SimpleDataConfig(DataConfigFactory):
             data_transforms=self.data_transforms(model_config),
             model_transforms=self.model_transforms(model_config),
         )
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotDeftDataConfig(DataConfigFactory):
+   # If provided, will be injected into the input data if the "prompt" key is not present.
+   default_prompt: str | None = None
+
+
+   # If True, convert absolute joint position actions to delta actions for training,
+   # and convert predicted deltas back to absolute actions at inference time.
+   # Grippers are always kept absolute.
+   extra_delta_transform: bool = True
+
+
+   # Repack transforms from dataset feature keys (dot notation) to policy input keys.
+   repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+       default=_transforms.Group(
+           inputs=[
+               _transforms.RepackTransform(
+                   {
+                       "observation/left_joint_pos": "observation.left_joint_pos",
+                       "observation/left_gripper_pos": "observation.left_gripper_pos",
+                       "observation/right_joint_pos": "observation.right_joint_pos",
+                       "observation/right_gripper_pos": "observation.right_gripper_pos",
+                       "observation/base_state": "observation.base_state",
+                       "observation/torso_state": "observation.torso_state",
+                       "observation/images/cam_high": "observation.images.cam_high",
+                       "observation/images/cam_left_wrist": "observation.images.cam_left_wrist",
+                       "observation/images/cam_right_wrist": "observation.images.cam_right_wrist",
+                       "action/left_joint_pos": "action.left_joint_pos",
+                       "action/left_gripper_pos": "action.left_gripper_pos",
+                       "action/right_joint_pos": "action.right_joint_pos",
+                       "action/right_gripper_pos": "action.right_gripper_pos",
+                       "action/base_cmd": "action.base_cmd",
+                       "action/lift_cmd": "action.lift_cmd",
+                   }
+               )
+           ]
+       )
+   )
+
+
+   # Action keys used by the data loader to assemble action sequences.
+   action_sequence_keys: Sequence[str] = (
+       "action.left_joint_pos",
+       "action.left_gripper_pos",
+       "action.right_joint_pos",
+       "action.right_gripper_pos",
+       "action.base_cmd",
+       "action.lift_cmd",
+   )
+
+
+   @override
+   def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+       data_transforms = _transforms.Group(
+           inputs=[deft_policy.DeftInputs(model_type=model_config.model_type)],
+           outputs=[deft_policy.DeftOutputs()],
+       )
+
+
+       if self.extra_delta_transform:
+           delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+           data_transforms = data_transforms.push(
+               inputs=[_transforms.DeltaActions(delta_action_mask)],
+               outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+           )
+
+
+       model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+
+       return dataclasses.replace(
+           self.create_base_config(assets_dirs, model_config),
+           repack_transforms=self.repack_transforms,
+           data_transforms=data_transforms,
+           model_transforms=model_transforms,
+           action_sequence_keys=self.action_sequence_keys,
+       )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -513,9 +592,9 @@ class TrainConfig:
     # How often (in steps) to log training metrics.
     log_interval: int = 100
     # How often (in steps) to save checkpoints.
-    save_interval: int = 1000
+    save_interval: int = 5000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
-    keep_period: int | None = 5000
+    keep_period: int | None = 10000
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -558,6 +637,45 @@ class TrainConfig:
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
+    # ------------------------------------------------------------
+    # DEFT configs.
+    # ------------------------------------------------------------
+    TrainConfig(
+       name="pi0.5_deft_task2",
+       model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
+       data=LeRobotDeftDataConfig(
+           repo_id="dataset-task2",
+           default_prompt="Rotate 90 degrees clockwise, pick up the compressor part with both grippers, rotate 90 degrees counterclockwise, and place the part on the fixture.",
+           base_config=DataConfig(
+               prompt_from_task=False,
+           ),
+           extra_delta_transform=True,
+       ),
+       weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+       num_train_steps=20_000,
+       batch_size=32,
+       num_workers=8,
+       fsdp_devices=4,
+   ),
+
+   TrainConfig(
+       name="pi0.5_deft_base",
+       model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
+       data=LeRobotDeftDataConfig(
+           repo_id="dataset-base",
+           default_prompt="rotate 90 degrees clockwise direction",
+           base_config=DataConfig(
+               prompt_from_task=False,
+           ),
+           extra_delta_transform=True,
+       ),
+       weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+       num_train_steps=20_000,
+       batch_size=32,
+       num_workers=8,
+       fsdp_devices=4,
+   ),
+
     #
     # Inference Aloha configs.
     #
