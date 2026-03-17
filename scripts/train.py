@@ -97,8 +97,9 @@ def upload_checkpoint_to_wandb(checkpoint_dir: epath.Path, step: int):
    else:
        logging.warning(f"Assets directory not found at {assets_dir}, skipping norm_stats upload.")
 
-    wandb.log_artifact(artifact, aliases=["latest", f"step-{step}"])
-    logging.info(f"Uploaded checkpoint at step {step} to W&B artifact '{artifact.name}'")
+   wandb.log_artifact(artifact, aliases=["latest", f"step-{step}"])
+   logging.info(f"Uploaded checkpoint at step {step} to W&B artifact '{artifact.name}'")
+   return artifact
 
 def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
     """Loads and validates the weights. Returns a loaded subset of the weights."""
