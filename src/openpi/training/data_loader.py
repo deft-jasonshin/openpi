@@ -137,18 +137,34 @@ def create_torch_dataset(
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = deft_dataset.DeftDatasetMetadata(repo_id)
-    dataset = deft_dataset.DeftDataset(
-        data_config.repo_id,
-        delta_timestamps={
-            key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
-        },
-        #TODO: adjust tolerance_s accordingly
-        tolerance_s=100,
-    )
-
-    if data_config.prompt_from_task:
-        dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
+    if isinstance(repo_id, list):
+        first_meta = deft_dataset.DeftDatasetMetadata(repo_id[0])
+        delta_timestamps = {
+            key: [t / first_meta.fps for t in range(action_horizon)]
+            for key in data_config.action_sequence_keys
+        }
+        dataset = deft_dataset.MultiDeftDataset(
+            repo_ids=repo_id,
+            delta_timestamps=delta_timestamps,
+            tolerance_s=100,
+        )
+        if data_config.prompt_from_task:
+            all_tasks = {}
+            for ds in dataset.datasets:
+                all_tasks.update(ds.meta.tasks)
+            dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(all_tasks)])
+    else:
+        dataset_meta = deft_dataset.DeftDatasetMetadata(repo_id)
+        dataset = deft_dataset.DeftDataset(
+            repo_id,
+            delta_timestamps={
+                key: [t / dataset_meta.fps for t in range(action_horizon)]
+                for key in data_config.action_sequence_keys
+            },
+            tolerance_s=100,
+        )
+        if data_config.prompt_from_task:
+            dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
 
     return dataset
 

@@ -21,6 +21,7 @@ import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.policies.deft_policy as deft_policy
+import openpi.policies.deft_legacy_policy as deft_legacy_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -64,8 +65,8 @@ class AssetsConfig:
 
 @dataclasses.dataclass(frozen=True)
 class DataConfig:
-    # LeRobot repo id. If None, fake data will be created.
-    repo_id: str | None = None
+    # LeRobot repo id. If None, fake data will be created. Can be a list for multi-dataset training.
+    repo_id: str | list[str] | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -166,8 +167,8 @@ class ModelTransformFactory(GroupFactory):
 
 @dataclasses.dataclass(frozen=True)
 class DataConfigFactory(abc.ABC):
-    # The LeRobot repo id.
-    repo_id: str = tyro.MISSING
+    # The LeRobot repo id. Can be a list for multi-dataset training.
+    repo_id: str | list[str] = tyro.MISSING
     # Determines how the assets will be loaded.
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
@@ -179,7 +180,15 @@ class DataConfigFactory(abc.ABC):
 
     def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repo_id = self.repo_id if self.repo_id is not tyro.MISSING else None
-        asset_id = self.assets.asset_id or repo_id
+        if isinstance(repo_id, list):
+            if not self.assets.asset_id:
+                raise ValueError(
+                    "When repo_id is a list (multi-dataset), you must set assets.asset_id explicitly "
+                    "to provide a single namespace for norm stats."
+                )
+            asset_id = self.assets.asset_id
+        else:
+            asset_id = self.assets.asset_id or repo_id
         return dataclasses.replace(
             self.base_config or DataConfig(),
             repo_id=repo_id,
@@ -281,6 +290,69 @@ class LeRobotDeftDataConfig(DataConfigFactory):
        data_transforms = _transforms.Group(
            inputs=[deft_policy.DeftInputs(model_type=model_config.model_type)],
            outputs=[deft_policy.DeftOutputs()],
+       )
+
+
+       if self.extra_delta_transform:
+           delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+           data_transforms = data_transforms.push(
+               inputs=[_transforms.DeltaActions(delta_action_mask)],
+               outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+           )
+
+
+       model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+
+       return dataclasses.replace(
+           self.create_base_config(assets_dirs, model_config),
+           repack_transforms=self.repack_transforms,
+           data_transforms=data_transforms,
+           model_transforms=model_transforms,
+           action_sequence_keys=self.action_sequence_keys,
+       )
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotDeftLegacyDataConfig(DataConfigFactory):
+   # If provided, will be injected into the input data if the "prompt" key is not present.
+   default_prompt: str | None = None
+
+
+   # If True, convert absolute joint position actions to delta actions for training,
+   # and convert predicted deltas back to absolute actions at inference time.
+   # Grippers are always kept absolute.
+   extra_delta_transform: bool = True
+
+
+   # Legacy schema:
+   # - action is a single 18-dim vector at key "action"
+   # - state is a single 68-dim vector at key "observation.state"
+   repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+       default=_transforms.Group(
+           inputs=[
+               _transforms.RepackTransform(
+                   {
+                       "observation/state": "observation.state",
+                       "observation/images/cam_high": "observation.images.cam_high",
+                       "observation/images/cam_left_wrist": "observation.images.cam_left_wrist",
+                       "observation/images/cam_right_wrist": "observation.images.cam_right_wrist",
+                       "actions": "action",
+                   }
+               )
+           ]
+       )
+   )
+
+
+   # Legacy action key is a single packed vector.
+   action_sequence_keys: Sequence[str] = ("action",)
+
+
+   @override
+   def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+       data_transforms = _transforms.Group(
+           inputs=[deft_legacy_policy.DeftLegacyInputs(model_type=model_config.model_type)],
+           outputs=[deft_legacy_policy.DeftLegacyOutputs()],
        )
 
 
@@ -664,6 +736,32 @@ _CONFIGS = [
        data=LeRobotDeftDataConfig(
            repo_id="dataset-base",
            default_prompt="rotate 90 degrees clockwise direction",
+           base_config=DataConfig(
+               prompt_from_task=False,
+           ),
+           extra_delta_transform=True,
+       ),
+       weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+       num_train_steps=20_000,
+       batch_size=32,
+       num_workers=8,
+       fsdp_devices=4,
+   ),
+
+   # ------------------------------------------------------------
+   # DEFT legacy configs.
+   # ------------------------------------------------------------
+
+    TrainConfig(
+       name="pi0.5_deft_experiment1",
+       model=pi0_config.Pi0Config(
+           pi05=True,
+           action_horizon=30,
+       ),
+       data=LeRobotDeftLegacyDataConfig(
+           repo_id=["dataset-exp1-part1", "dataset-exp1-part2"],
+           assets=AssetsConfig(asset_id="deft_experiment1"),
+           default_prompt="pick up the compressor part and place it on the fixture",
            base_config=DataConfig(
                prompt_from_task=False,
            ),
