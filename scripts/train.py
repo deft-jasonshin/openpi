@@ -97,9 +97,8 @@ def upload_checkpoint_to_wandb(checkpoint_dir: epath.Path, step: int):
    else:
        logging.warning(f"Assets directory not found at {assets_dir}, skipping norm_stats upload.")
 
-
-   wandb.log_artifact(artifact, aliases=["latest", f"step-{step}"])
-   logging.info(f"Uploaded checkpoint at step {step} to W&B artifact '{artifact.name}'")
+    wandb.log_artifact(artifact, aliases=["latest", f"step-{step}"])
+    logging.info(f"Uploaded checkpoint at step {step} to W&B artifact '{artifact.name}'")
 
 def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
     """Loads and validates the weights. Returns a loaded subset of the weights."""
@@ -302,6 +301,7 @@ def main(config: _config.TrainConfig):
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+            checkpoint_manager.wait_until_finished()
             upload_checkpoint_to_wandb(config.checkpoint_dir, step)
 
     logging.info("Waiting for checkpoint manager to finish")
