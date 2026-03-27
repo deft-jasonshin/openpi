@@ -9,7 +9,7 @@ import torch.nn.functional as F  # noqa: N812
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
-from openpi.serving.rtc_processor import RTCProcessor
+from openpi.serving.rtc_processor import RTCConfig, RTCProcessor
 
 
 def get_safe_dtype(target_dtype, device_type):
@@ -109,10 +109,11 @@ class PI0Pytorch(nn.Module):
             self.action_time_mlp_in = nn.Linear(2 * action_expert_config.width, action_expert_config.width)
             self.action_time_mlp_out = nn.Linear(action_expert_config.width, action_expert_config.width)
 
+        self.rtc_processor = RTCProcessor(RTCConfig())
+
         torch.set_float32_matmul_precision("high")
         self.sample_actions = torch.compile(self.sample_actions, mode="max-autotune")
 
-        # Initialize gradient checkpointing flag
         self.gradient_checkpointing_enabled = False
 
         msg = "transformers_replace is not installed correctly. Please install it with `uv pip install transformers==4.53.2` and `cp -r ./src/openpi/models_pytorch/transformers_replace/* .venv/lib/python3.11/site-packages/transformers/`."
@@ -373,21 +374,18 @@ class PI0Pytorch(nn.Module):
 
         return F.mse_loss(u_t, v_t, reduction="none")
 
-    @torch.no_grad()
-    def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
-        """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
-        bsize = observation.state.shape[0]
-        if noise is None:
-            actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
-            noise = self.sample_noise(actions_shape, device)
+    def _prepare_prefix_kv_cache(self, observation, device):
+        """Preprocess observation and compute the prefix KV cache (no gradients)."""
+        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(
+            observation, train=False
+        )
 
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
-
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
+            images, img_masks, lang_tokens, lang_masks
+        )
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
-        # Compute image and language key value cache
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
         self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
 
@@ -399,6 +397,18 @@ class PI0Pytorch(nn.Module):
             use_cache=True,
         )
 
+        return state, prefix_pad_masks, past_key_values
+
+    @torch.no_grad()
+    def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
+        """Run standard flow-matching inference (no RTC guidance)."""
+        bsize = observation.state.shape[0]
+        if noise is None:
+            actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
+            noise = self.sample_noise(actions_shape, device)
+
+        state, prefix_pad_masks, past_key_values = self._prepare_prefix_kv_cache(observation, device)
+
         dt = -1.0 / num_steps
         dt = torch.tensor(dt, dtype=torch.float32, device=device)
 
@@ -406,15 +416,7 @@ class PI0Pytorch(nn.Module):
         time = torch.tensor(1.0, dtype=torch.float32, device=device)
         while time >= -dt / 2:
             expanded_time = time.expand(bsize)
-            v_t = self.denoise_step(
-                state,
-                prefix_pad_masks,
-                past_key_values,
-                x_t,
-                expanded_time,
-            )
-
-            # Euler step - use new tensor assignment instead of in-place operation
+            v_t = self.denoise_step(state, prefix_pad_masks, past_key_values, x_t, expanded_time)
             x_t = x_t + dt * v_t
             time += dt
         return x_t
@@ -437,28 +439,8 @@ class PI0Pytorch(nn.Module):
             noise = self.sample_noise(actions_shape, device)
 
         with torch.no_grad():
-            images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(
-                observation, train=False
-            )
+            state, prefix_pad_masks, past_key_values = self._prepare_prefix_kv_cache(observation, device)
 
-            prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
-                images, img_masks, lang_tokens, lang_masks
-            )
-            prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
-            prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
-
-            prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
-            self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
-
-            _, past_key_values = self.paligemma_with_expert.forward(
-                attention_mask=prefix_att_2d_masks_4d,
-                position_ids=prefix_position_ids,
-                past_key_values=None,
-                inputs_embeds=[prefix_embs, None],
-                use_cache=True,
-            )
-
-        rtc_processor = RTCProcessor()
         dt = -1.0 / num_steps
         dt = torch.tensor(dt, dtype=torch.float32, device=device)
 
@@ -469,24 +451,19 @@ class PI0Pytorch(nn.Module):
 
             def base_denoise_fn(latent_actions):
                 return self.denoise_step(
-                    state,
-                    prefix_pad_masks,
-                    past_key_values,
-                    latent_actions,
-                    expanded_time,
+                    state, prefix_pad_masks, past_key_values, latent_actions, expanded_time,
                 )
 
-            v_t = rtc_processor.denoise_step(
+            v_t = self.rtc_processor.guided_denoise_step(
                 x_t,
-                prev_chunk,
-                inference_delay,
                 expanded_time,
                 base_denoise_fn,
+                prev_chunk,
+                inference_delay=inference_delay,
                 execution_horizon=execution_horizon,
                 max_guidance_weight=max_guidance_weight,
             )
 
-            # Detach between denoising iterations so each RTC correction builds a fresh graph.
             x_t = (x_t + dt * v_t).detach()
             time += dt
 

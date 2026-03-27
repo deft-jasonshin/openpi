@@ -22,7 +22,6 @@ class PrefixAttentionSchedule(str, Enum):
 class RTCConfig:
     """Configuration for Real-Time Chunking guidance."""
 
-    enabled: bool = False
     prefix_attention_schedule: PrefixAttentionSchedule = PrefixAttentionSchedule.EXP
     max_guidance_weight: float = 5.0
 
@@ -34,10 +33,13 @@ class RTCConfig:
 
 
 class RTCProcessor:
-    """Implements the RTC soft mask and IIGDM guidance correction."""
+    """Implements the RTC soft mask and IIGDM guidance correction.
 
-    def __init__(self, rtc_config: RTCConfig | None = None) -> None:
-        self.rtc_config = rtc_config or RTCConfig()
+    Instantiate once (e.g. in the model constructor) and reuse across calls.
+    """
+
+    def __init__(self, config: RTCConfig | None = None) -> None:
+        self.config = config or RTCConfig()
 
     def get_prefix_weights(
         self,
@@ -69,22 +71,23 @@ class RTCProcessor:
         start = min(inference_delay, overlap_end)
         dtype = dtype or torch.float32
 
-        if self.rtc_config.prefix_attention_schedule == PrefixAttentionSchedule.ZEROS:
+        schedule = self.config.prefix_attention_schedule
+
+        if schedule == PrefixAttentionSchedule.ZEROS:
             weights = torch.zeros(action_horizon, dtype=dtype, device=device)
             weights[:start] = 1.0
             return weights
 
-        if self.rtc_config.prefix_attention_schedule == PrefixAttentionSchedule.ONES:
+        if schedule == PrefixAttentionSchedule.ONES:
             weights = torch.zeros(action_horizon, dtype=dtype, device=device)
             weights[:overlap_end] = 1.0
             return weights
 
         mid_weights = self._linear_weights(start, overlap_end, device=device, dtype=dtype)
-        if self.rtc_config.prefix_attention_schedule == PrefixAttentionSchedule.EXP:
+        if schedule == PrefixAttentionSchedule.EXP:
             mid_weights = mid_weights * torch.expm1(mid_weights) / (math.e - 1)
 
-        weights = self._add_trailing_zeros(mid_weights, action_horizon, overlap_end)
-        weights = self._add_leading_ones(weights, start, action_horizon)
+        weights = self._assemble_weights(mid_weights, start, overlap_end, action_horizon)
         return weights
 
     def guided_denoise_step(
@@ -93,28 +96,21 @@ class RTCProcessor:
         time: float | Tensor,
         base_denoise_fn: Callable[[Tensor], Tensor],
         prev_chunk: Tensor | None,
-        *,
-        weights: Tensor | None = None,
-        inference_delay: int | None = None,
-        execution_horizon: int | None = None,
+        inference_delay: int,
+        execution_horizon: int,
         max_guidance_weight: float | None = None,
     ) -> Tensor:
-        """Apply one RTC-guided denoising step.
+        """Apply one RTC-guided denoising step (IIGDM correction).
 
         Args:
-            x_t: Current latent action chunk of shape ``(B, H, A)`` or ``(H, A)``.
-            time: Current denoising time in the model's convention, where time
-                decreases from 1 to 0 during sampling.
-            base_denoise_fn: Callable that maps ``x_t`` to the base velocity field.
-            prev_chunk: Leftover actions from the previous chunk. If ``None``,
-                the base velocity is returned unchanged.
-            weights: Optional precomputed prefix weights of shape ``(H,)`` or
-                broadcastable to ``x_t``.
-            inference_delay: Required when ``weights`` is not provided.
-            execution_horizon: Required when ``weights`` is not provided.
-            max_guidance_weight: Optional override for the config value.
+            x_t: Current latent action chunk ``(B, H, A)`` or ``(H, A)``.
+            time: Denoising time (1 = pure noise, 0 = clean).
+            base_denoise_fn: Maps ``x_t`` to the base velocity field.
+            prev_chunk: Previous action chunk. ``None`` skips guidance.
+            inference_delay: Steps already executed while computing this chunk.
+            execution_horizon: Steps that will be executed from this chunk.
+            max_guidance_weight: Clamp for the time-dependent guidance weight.
         """
-
         if prev_chunk is None:
             return base_denoise_fn(x_t)
 
@@ -128,20 +124,13 @@ class RTCProcessor:
         x_t = x_t.detach().clone().requires_grad_(True)
         prev_chunk = self._pad_prev_chunk(prev_chunk, x_t)
 
-        if weights is None:
-            if inference_delay is None or execution_horizon is None:
-                raise ValueError(
-                    "Either weights or both inference_delay and execution_horizon must be provided."
-                )
-            weights = self.get_prefix_weights(
-                inference_delay,
-                execution_horizon,
-                x_t.shape[1],
-                device=x_t.device,
-                dtype=x_t.dtype,
-            )
-        else:
-            weights = weights.to(device=x_t.device, dtype=x_t.dtype)
+        weights = self.get_prefix_weights(
+            inference_delay,
+            execution_horizon,
+            x_t.shape[1],
+            device=x_t.device,
+            dtype=x_t.dtype,
+        )
 
         weights = self._broadcast_weights(weights, x_t)
         time_tensor = self._broadcast_time(time, x_t)
@@ -166,34 +155,9 @@ class RTCProcessor:
             guided_velocity = guided_velocity.squeeze(0)
         return guided_velocity
 
-    def denoise_step(
-        self,
-        x_t: Tensor,
-        prev_chunk: Tensor | None,
-        inference_delay: int,
-        time: float | Tensor,
-        base_denoise_fn: Callable[[Tensor], Tensor],
-        *,
-        execution_horizon: int,
-        max_guidance_weight: float | None = None,
-    ) -> Tensor:
-        """Compatibility wrapper mirroring the upstream RTC processor API."""
-
-        weights = self.get_prefix_weights(
-            inference_delay,
-            execution_horizon,
-            x_t.shape[-2],
-            device=x_t.device,
-            dtype=x_t.dtype,
-        )
-        return self.guided_denoise_step(
-            x_t,
-            time,
-            base_denoise_fn,
-            prev_chunk,
-            weights=weights,
-            max_guidance_weight=max_guidance_weight,
-        )
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
     def _compute_guidance_weight(
         self,
@@ -201,7 +165,7 @@ class RTCProcessor:
         reference: Tensor,
         max_guidance_weight: float | None,
     ) -> Tensor:
-        max_weight = max_guidance_weight or self.rtc_config.max_guidance_weight
+        max_weight = max_guidance_weight or self.config.max_guidance_weight
         max_weight_tensor = torch.as_tensor(max_weight, device=reference.device, dtype=reference.dtype)
 
         time_tensor = torch.as_tensor(time, device=reference.device, dtype=reference.dtype)
@@ -227,29 +191,20 @@ class RTCProcessor:
         linspace_steps = overlap_end - start
         if linspace_steps <= 0:
             return torch.empty(0, dtype=dtype, device=device)
-        return torch.linspace(
-            1.0,
-            0.0,
-            linspace_steps + 2,
-            dtype=dtype,
-            device=device,
-        )[1:-1]
+        return torch.linspace(1.0, 0.0, linspace_steps + 2, dtype=dtype, device=device)[1:-1]
 
-    def _add_trailing_zeros(self, weights: Tensor, total: int, overlap_end: int) -> Tensor:
-        zeros_len = max(total - overlap_end, 0)
-        if zeros_len == 0:
-            return weights
-        return torch.cat(
-            [weights, torch.zeros(zeros_len, dtype=weights.dtype, device=weights.device)]
-        )
-
-    def _add_leading_ones(self, weights: Tensor, start: int, total: int) -> Tensor:
-        ones_len = min(start, total)
-        if ones_len == 0:
-            return weights
-        return torch.cat(
-            [torch.ones(ones_len, dtype=weights.dtype, device=weights.device), weights]
-        )
+    def _assemble_weights(
+        self, mid_weights: Tensor, start: int, overlap_end: int, total: int
+    ) -> Tensor:
+        """Concatenate leading ones, mid decay, and trailing zeros."""
+        parts: list[Tensor] = []
+        if start > 0:
+            parts.append(torch.ones(min(start, total), dtype=mid_weights.dtype, device=mid_weights.device))
+        parts.append(mid_weights)
+        trailing = max(total - overlap_end, 0)
+        if trailing > 0:
+            parts.append(torch.zeros(trailing, dtype=mid_weights.dtype, device=mid_weights.device))
+        return torch.cat(parts)
 
     def _pad_prev_chunk(self, prev_chunk: Tensor, x_t: Tensor) -> Tensor:
         prev_chunk = prev_chunk.to(device=x_t.device, dtype=x_t.dtype)
@@ -258,11 +213,8 @@ class RTCProcessor:
 
         batch_size, action_horizon, action_dim = x_t.shape
         padded = torch.zeros(
-            batch_size,
-            action_horizon,
-            action_dim,
-            device=x_t.device,
-            dtype=x_t.dtype,
+            batch_size, action_horizon, action_dim,
+            device=x_t.device, dtype=x_t.dtype,
         )
         padded[:, : prev_chunk.shape[1], : prev_chunk.shape[2]] = prev_chunk[
             :, :action_horizon, :action_dim
@@ -271,9 +223,9 @@ class RTCProcessor:
 
     def _broadcast_weights(self, weights: Tensor, x_t: Tensor) -> Tensor:
         if weights.ndim == 1:
-            weights = weights.unsqueeze(0).unsqueeze(-1)
-        elif weights.ndim == 2:
-            weights = weights.unsqueeze(-1)
+            return weights.unsqueeze(0).unsqueeze(-1)
+        if weights.ndim == 2:
+            return weights.unsqueeze(-1)
         return weights
 
     def _broadcast_time(self, time: float | Tensor, x_t: Tensor) -> Tensor:
