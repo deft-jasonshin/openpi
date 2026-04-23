@@ -21,6 +21,7 @@ import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.policies.deft_policy as deft_policy
+import openpi.policies.deft_latest_policy as deft_latest_policy
 import openpi.policies.deft_legacy_policy as deft_legacy_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -311,6 +312,73 @@ class LeRobotDeftDataConfig(DataConfigFactory):
            model_transforms=model_transforms,
            action_sequence_keys=self.action_sequence_keys,
        )
+
+@dataclasses.dataclass(frozen=True)
+class DeftLatestDataConfig(DataConfigFactory):
+    """Data config for yam_ai_mobile v2.1 schema (video-based images, 6-dim base_target_state)."""
+
+    default_prompt: str | None = None
+
+    extra_delta_transform: bool = True
+
+    repack_transforms: tyro.conf.Suppress[_transforms.Group] = dataclasses.field(
+        default=_transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/left_joint_pos": "observation.left_joint_pos",
+                        "observation/left_gripper_pos": "observation.left_gripper_pos",
+                        "observation/right_joint_pos": "observation.right_joint_pos",
+                        "observation/right_gripper_pos": "observation.right_gripper_pos",
+                        "observation/base_state": "observation.base_state",
+                        "observation/torso_state": "observation.torso_state",
+                        "observation/images/cam_high": "observation.images.cam_high",
+                        "observation/images/cam_left_wrist": "observation.images.cam_left_wrist",
+                        "observation/images/cam_right_wrist": "observation.images.cam_right_wrist",
+                        "action/left_joint_pos": "action.left_joint_pos",
+                        "action/left_gripper_pos": "action.left_gripper_pos",
+                        "action/right_joint_pos": "action.right_joint_pos",
+                        "action/right_gripper_pos": "action.right_gripper_pos",
+                        "action/base_target_state": "action.base_target_state",
+                        "action/lift_cmd": "action.lift_cmd",
+                    }
+                )
+            ]
+        )
+    )
+
+    action_sequence_keys: Sequence[str] = (
+        "action.left_joint_pos",
+        "action.left_gripper_pos",
+        "action.right_joint_pos",
+        "action.right_gripper_pos",
+        "action.base_target_state",
+        "action.lift_cmd",
+    )
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[deft_latest_policy.DeftLatestInputs(model_type=model_config.model_type)],
+            outputs=[deft_latest_policy.DeftLatestOutputs()],
+        )
+
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=self.repack_transforms,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
+        )
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotDeftLegacyDataConfig(DataConfigFactory):
@@ -712,6 +780,24 @@ _CONFIGS = [
     # ------------------------------------------------------------
     # DEFT configs.
     # ------------------------------------------------------------
+    TrainConfig(
+        name="pi0.5_deft_representative",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
+        data=LeRobotDeftDataConfig(
+            repo_id=["dataset-0414", "dataset-0415", "dataset-0416"],
+            assets=AssetsConfig(asset_id="deft_representative"),
+            default_prompt="Rotate 90 degrees clockwise, pick up the compressor part with both grippers, rotate 90 degrees counterclockwise, and place the part on the fixture accurately.",
+            base_config=DataConfig(
+                prompt_from_task=False,
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=80_000,
+        batch_size=32,
+        num_workers=8,
+        fsdp_devices=1,
+    ),
     TrainConfig(
        name="pi0.5_deft_task2",
        model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
