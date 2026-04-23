@@ -49,10 +49,6 @@ class DeftLatestInputs(transforms.DataTransformFn):
             ]
         )
 
-        base_image = _parse_image(data["observation/images/cam_high"])
-        left_wrist_image = _parse_image(data["observation/images/cam_left_wrist"])
-        right_wrist_image = _parse_image(data["observation/images/cam_right_wrist"])
-
         actions = np.concatenate(
             [
                 np.asarray(data["action/left_joint_pos"]),
@@ -65,20 +61,25 @@ class DeftLatestInputs(transforms.DataTransformFn):
             axis=-1,
         )
 
-        inputs = {
+        inputs: dict = {
             "state": state,
-            "image": {
+            "actions": actions,
+        }
+
+        if "observation/images/cam_high" in data:
+            base_image = _parse_image(data["observation/images/cam_high"])
+            left_wrist_image = _parse_image(data["observation/images/cam_left_wrist"])
+            right_wrist_image = _parse_image(data["observation/images/cam_right_wrist"])
+            inputs["image"] = {
                 "base_0_rgb": base_image,
                 "left_wrist_0_rgb": left_wrist_image,
                 "right_wrist_0_rgb": right_wrist_image,
-            },
-            "image_mask": {
+            }
+            inputs["image_mask"] = {
                 "base_0_rgb": np.True_,
                 "left_wrist_0_rgb": np.True_,
                 "right_wrist_0_rgb": np.True_,
-            },
-            "actions": actions,
-        }
+            }
 
         if "prompt" in data:
             prompt = data["prompt"]

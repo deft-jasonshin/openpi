@@ -21,6 +21,33 @@ class RemoveStrings(transforms.DataTransformFn):
         return {k: v for k, v in x.items() if not np.issubdtype(np.asarray(v).dtype, np.str_)}
 
 
+def _disable_video_decoding(dataset) -> None:
+    """Patch DeftDataset instances to skip video decoding by marking video features as disabled."""
+    if hasattr(dataset, "datasets"):
+        for ds in dataset.datasets:
+            _disable_video_decoding(ds)
+    if hasattr(dataset, "_dataset"):
+        _disable_video_decoding(dataset._dataset)
+    if hasattr(dataset, "meta") and hasattr(dataset.meta, "info"):
+        for feat in dataset.meta.info.get("features", {}).values():
+            if feat.get("dtype") == "video":
+                feat["dtype"] = "_disabled"
+
+
+def _filter_image_repack(transform_list: list) -> list:
+    """Remove image-related keys from RepackTransforms for stats-only computation."""
+    filtered = []
+    for t in transform_list:
+        if isinstance(t, transforms.RepackTransform):
+            flat_structure = transforms.flatten_dict(t.structure)
+            filtered_structure = {k: v for k, v in flat_structure.items() if "image" not in k}
+            if filtered_structure:
+                filtered.append(transforms.RepackTransform(transforms.unflatten_dict(filtered_structure)))
+        else:
+            filtered.append(t)
+    return filtered
+
+
 def create_torch_dataloader(
     data_config: _config.DataConfig,
     action_horizon: int,
@@ -32,12 +59,12 @@ def create_torch_dataloader(
     if data_config.repo_id is None:
         raise ValueError("Data config must have a repo_id")
     dataset = _data_loader.create_torch_dataset(data_config, action_horizon, model_config)
+    _disable_video_decoding(dataset)
     dataset = _data_loader.TransformedDataset(
         dataset,
         [
-            *data_config.repack_transforms.inputs,
+            *_filter_image_repack(data_config.repack_transforms.inputs),
             *data_config.data_transforms.inputs,
-            # Remove strings since they are not supported by JAX and are not needed to compute norm stats.
             RemoveStrings(),
         ],
     )
