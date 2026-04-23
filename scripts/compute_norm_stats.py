@@ -39,10 +39,9 @@ def _filter_image_repack(transform_list: list) -> list:
     filtered = []
     for t in transform_list:
         if isinstance(t, transforms.RepackTransform):
-            flat_structure = transforms.flatten_dict(t.structure)
-            filtered_structure = {k: v for k, v in flat_structure.items() if "image" not in k}
-            if filtered_structure:
-                filtered.append(transforms.RepackTransform(transforms.unflatten_dict(filtered_structure)))
+            new_structure = {k: v for k, v in t.structure.items() if "image" not in k}
+            if new_structure:
+                filtered.append(transforms.RepackTransform(new_structure))
         else:
             filtered.append(t)
     return filtered
